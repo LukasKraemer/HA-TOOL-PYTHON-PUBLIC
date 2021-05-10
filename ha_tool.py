@@ -22,8 +22,8 @@ class HaTool:
     _engine = None  # Database connection
 
     config = dotenv_values(".env")  # Env vars
-    _raw_data_table = config["raw_data_table"]  # table raw uploaded
-    _overview_table = config["overview_table"]  # summary table
+    _raw_data_table = config["table_raw"]  # table raw uploaded
+    _overview_table = config["table_overview"]  # summary table
     _log_table = config["created_trips_table"]  # log filename in db
     _path = config["PathToTripData"]  # path to the target path for txt data
     _threads = config["process"]  # number of processes
@@ -111,18 +111,16 @@ class HaTool:
 
         for i in range(number_of_processes):
             self._todo_trips.append(tasks.pop().pop())
-
-        while True:
+        run = True
+        while run:
             for i in range(number_of_processes):
                 if self._todo_trips[i] == "next":
-                    # value = value + 1
                     self._todo_trips[i] = tasks.pop().pop()
 
-            # print("everything calculated")
-            #    sys_exit()
             if len(tasks) == 0:
-                print("everything started")
-                sys_exit()
+                run = False
+        print("everything started")
+        sys_exit()
 
     def _duplicate_check(self, filename):
         """check if file exist in Database"""
@@ -192,14 +190,13 @@ class HaTool:
                 sys_exit()
             timeout = 0
             while self._todo_trips[process_id] == "next":
-                sleep(5)
+                sleep(1)
                 if timeout >= 12:
                     sys_exit()
                 timeout += 1
-
             query = f"""
             SELECT * FROM {self._raw_data_table}
-            WHERE trip_counter = {self._todo_trips[process_id]} ORDER BY Date asc; """
+            WHERE trip_counter = {self._todo_trips[process_id]} ORDER BY time asc; """
             trip_values_database = pd.read_sql_query(query, self._engine)
 
             number_lines = trip_values_database.shape[0]
@@ -208,7 +205,6 @@ class HaTool:
                 exit()
             elif number_lines <= 20:
                 self._todo_trips[process_id] = "next"
-                sleep(0.5)
                 self._calc_summary(process_id)
             df4 = pd.DataFrame(columns=['soc'])
 
@@ -292,12 +288,10 @@ class HaTool:
             del overview_frame
 
             self._todo_trips[process_id] = "next"
-            sleep(3)
             self._calc_summary(process_id=process_id)
 
         except ZeroDivisionError:
             self._todo_trips[process_id] = "next"
-            sleep(5)
             self._calc_summary(process_id=process_id)
 
         print("Overview finished")
@@ -309,7 +303,7 @@ class HaTool:
         if program == "trips":
             p1 = threading.Thread(target=self._upload_trips_raw)
             p1.start()
-            p1.join(500)
+            p1.join(300)
 
         elif program == "calc_summary":
             self._task_list = self._genListOfTripsToCalc()
@@ -328,7 +322,7 @@ class HaTool:
             p3.start()
 
             timeout = 0
-            while timeout <= 30:
+            while timeout <= 15:
                 if len(self._todo_trips) == thread_count:
                     break
                 sleep(1)
