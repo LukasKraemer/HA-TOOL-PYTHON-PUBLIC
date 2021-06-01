@@ -286,9 +286,8 @@ class HaTool:
 
             self._lock.acquire()
             overview_frame.to_sql(self._overview_table,
+                                  index= False,
                                   con=self._engine,
-                                  index=True,
-                                  index_label='id',
                                   if_exists='append')
             self._lock.release()
             del overview_frame
