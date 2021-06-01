@@ -21,17 +21,17 @@ class HaTool:
     _lock = threading.Lock()  # thread lock
     _engine = None  # Database connection
 
-    config = dotenv_values(".env")  # Env vars
-    _raw_data_table = config["table_raw"]  # table raw uploaded
-    _overview_table = config["table_overview"]  # summary table
-    _log_table = config["created_trips_table"]  # log filename in db
-    _path = config["PathToTripData"]  # path to the target path for txt data
-    _threads = config["process"]  # number of processes
+    _config = dotenv_values(".env")  # Env vars
+    _raw_data_table = _config["table_raw"]  # table raw uploaded
+    _overview_table = _config["table_overview"]  # summary table
+    _log_table = _config["created_trips_table"]  # log filename in db
+    _path = _config["PathToTripData"]  # path to the target path for txt data
+    _threads = _config["process"]  # number of processes
 
     def __init__(self):
         """check if System is ready configure"""
         load_dotenv()
-        self.config = dotenv_values(".env")
+        self._config = dotenv_values(".env")
         if not (os.path.isdir(self._path)):
             os.makedirs(self._path)
         self._login_value()
@@ -40,10 +40,10 @@ class HaTool:
 
     def _login_value(self):
         """Connection to the Database and log """
-        db_user = self.config["DB_USERNAME"]
-        db_passwd = self.config["DB_PASSWORD"]
-        db_ip = self.config["DB_HOST"]
-        db_schema = self.config["DB_SCHEMA"]
+        db_user = self._config["DB_USERNAME"]
+        db_passwd = self._config["DB_PASSWORD"]
+        db_ip = self._config["DB_HOST"]
+        db_schema = self._config["DB_SCHEMA"]
         # [driver]://[username][password]@[IP]/[Schema in DB]
         db_uri = f'mysql+pymysql://{db_user}:{db_passwd}@{db_ip}:3306/{db_schema}'
         self._engine = sqlalchemy.create_engine(db_uri)  # connect to Database
@@ -82,26 +82,26 @@ class HaTool:
             return 0
 
     def _getMissiongSummaryTrips(self):
-        return pd.read_sql_query(f'''SELECT DISTINCT trip_number +1
-                                FROM {self._overview_table}
-                                WHERE trip_number +1 NOT IN 
-                                (SELECT DISTINCT trip_number FROM {self._overview_table});''',
-                                 con=self._engine)
+        ids = []
+        try:
+            values = pd.read_sql_query(f'''SELECT trip_counter
+                                            FROM {self._raw_data_table}
+                                            WHERE {self._raw_data_table}.trip_counter NOT IN
+                                            (SELECT  {self._overview_table}.trip_number FROM  {self._overview_table})
+                                            group by trip_counter''',
+                                       con=self._engine)
 
-    def _genListOfTripsToCalc(self):
-        trips = self._getMissiongSummaryTrips().values.tolist()
+            for index, row in values.iterrows():
+                ids.append(row['trip_counter'])
+        except Exception:
+            print("Summary not founded")
+            values = pd.read_sql_query(f'''SELECT trip_counter FROM rawData order by trip_counter
+                                        desc limit 1''', con=self._engine)
 
-        raw_trip = 0
-        overview_trip = 0
-        if self._get_last_trip(self._raw_data_table)['trip_counter'][0] != 0:
-            raw_trip = int(self._get_last_trip(self._raw_data_table)['trip_counter'][0])
-        if self._get_last_trip(self._overview_table, "trip_number")['trip_number'][0] != 0:
-            overview_trip = int(self._get_last_trip(self._overview_table, "trip_number")['trip_number'][0])
-
-        for i in range(overview_trip + 1, raw_trip, 1):
-            trips.add(int(i))
-
-        return trips
+            for i in range(values['trip_counter'][0], 0, -1):
+                ids.append(i)
+        finally:
+            return ids
 
     def _trip_handler(self, number_of_processes):
         """manage the Summary Calculator"""
@@ -110,12 +110,12 @@ class HaTool:
         # value = self._get_last_trip_number()
 
         for i in range(number_of_processes):
-            self._todo_trips.append(tasks.pop().pop())
+            self._todo_trips.append(tasks.pop())
         run = True
         while run:
             for i in range(number_of_processes):
                 if self._todo_trips[i] == "next":
-                    self._todo_trips[i] = tasks.pop().pop()
+                    self._todo_trips[i] = tasks.pop()
 
             if len(tasks) == 0:
                 run = False
@@ -185,6 +185,7 @@ class HaTool:
 
     def _calc_summary(self, process_id):
         """gen _calc_summary trip by trip"""
+
         try:
             if self._todo_trips[process_id] == "finished":
                 sys_exit()
@@ -194,6 +195,7 @@ class HaTool:
                 if timeout >= 12:
                     sys_exit()
                 timeout += 1
+
             query = f"""
             SELECT * FROM {self._raw_data_table}
             WHERE trip_counter = {self._todo_trips[process_id]} ORDER BY time asc; """
@@ -206,6 +208,7 @@ class HaTool:
             elif number_lines <= 20:
                 self._todo_trips[process_id] = "next"
                 self._calc_summary(process_id)
+                return
             df4 = pd.DataFrame(columns=['soc'])
 
             for x in range(0, number_lines):  # remove all 0 from the Dataset
@@ -213,9 +216,12 @@ class HaTool:
                     soc_val = float(trip_values_database.at[x, 'soc'])
                     df4 = df4.append({'soc': soc_val}, ignore_index=True)
             last_row = int(number_lines - 1)
-
-            c_soc_start = df4.at[0, "soc"]
-            c_soc_end = trip_values_database['soc'][number_lines - 1]
+            if df4.shape[0] != 0:
+                c_soc_start = df4.at[0, "soc"]
+                c_soc_end = trip_values_database['soc'][number_lines - 1]
+            else:
+                c_soc_start = 0
+                c_soc_end = 0
 
             consumption_average = float(trip_values_database['tripfuel'][last_row]) / 10 / float(
                 trip_values_database['trip_dist'][last_row])  # Consumption km / h
@@ -227,11 +233,11 @@ class HaTool:
                 trip_values_database['trip_mov_nbs'][last_row])  # time of standing
 
             # dataset for Database
-            regex = "[0-2][0-9]:[0-5][0-9]"
+            regex = r"[0-2][0-9]:[0-5][0-9]"
             summary_value = {'trip_number': trip_values_database['trip_counter'][1],
                              'day': pd.to_datetime(trip_values_database['Date'][0]).date(),
-                             'time_Begins': re.match(regex, trip_values_database['Time'][0])[0],
-                             'time_End': re.match(regex, trip_values_database['Time'][last_row])[0],
+                             'time_Begins': re.match(regex, trip_values_database['Time'][0].replace(" ", ""))[0],
+                             'time_End': re.match(regex, trip_values_database['Time'][last_row].replace(" ", ""))[0],
                              'km_start': trip_values_database['odo'][0],
                              'km_end': trip_values_database['odo'][last_row],
                              'trip_length': round(trip_values_database['trip_dist'][last_row], 2),
@@ -299,17 +305,16 @@ class HaTool:
     def start(self, program):
         """run the start with all parameter"""
         number_of_processes = self._threads
-        process_running = []
         if program == "trips":
             p1 = threading.Thread(target=self._upload_trips_raw)
             p1.start()
             p1.join(300)
 
         elif program == "calc_summary":
-            self._task_list = self._genListOfTripsToCalc()
-
+            self._task_list = self._getMissiongSummaryTrips()
             diff = len(self._task_list)
-            thread_count = int()
+
+            thread_count = 0
             if diff == 0:
                 print("no new values")
                 sys_exit()
@@ -318,19 +323,15 @@ class HaTool:
                 thread_count = int(diff)
             else:
                 thread_count = int(number_of_processes)
-            p3 = threading.Thread(target=self._trip_handler, args=(thread_count,))
-            p3.start()
+            threading.Thread(target=self._trip_handler, args=(thread_count,)).start()
 
             timeout = 0
             while timeout <= 15:
                 if len(self._todo_trips) == thread_count:
                     break
-                sleep(1)
-
+                sleep(0.5)
             for i in range(int(thread_count)):
-                threading.Thread()
-                process_running.append(threading.Thread(target=self._calc_summary, args=(i,)))
-                process_running[i].start()
+                threading.Thread(target=self._calc_summary, args=(i,)).start()
 
         else:
             print("unknown program")
