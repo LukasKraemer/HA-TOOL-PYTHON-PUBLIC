@@ -175,6 +175,7 @@ class HaTool:
                 del values_of_file
         sys_exit()
 
+
     @staticmethod
     def _dataframe_difference(df1, df2):
         """Find rows which are different between two DataFrames."""
@@ -230,14 +231,13 @@ class HaTool:
                 trip_values_database['trip_dist'][last_row])  # proportion of the usage of the electric engine
 
             driving_stop = float(trip_values_database['trip_nbs'][last_row]) - float(
-                trip_values_database['trip_mov_nbs'][last_row])  # time of standing
+            trip_values_database['trip_mov_nbs'][last_row])  # time of standing
 
             # dataset for Database
-            regex = r"[0-2][0-9]:[0-5][0-9]"
             summary_value = {'trip_number': trip_values_database['trip_counter'][1],
                              'day': pd.to_datetime(trip_values_database['Date'][0]).date(),
-                             'time_Begins': re.match(regex, trip_values_database['Time'][0].replace(" ", ""))[0],
-                             'time_End': re.match(regex, trip_values_database['Time'][last_row].replace(" ", ""))[0],
+                             'time_Begins': str(trip_values_database['Time'][0])[-8:-3],
+                             'time_End': str(trip_values_database['Time'][last_row])[-8:-3],
                              'km_start': trip_values_database['odo'][0],
                              'km_end': trip_values_database['odo'][last_row],
                              'trip_length': round(trip_values_database['trip_dist'][last_row], 2),
