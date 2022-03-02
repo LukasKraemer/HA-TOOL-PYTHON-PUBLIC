@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# HA - Tool version 2.1
+# HA - Tool version 2.2
 # Lukas Krämer
 # MIT License
 # 2021
@@ -73,7 +73,6 @@ class HaTool:
 
             target_trip_number = self._get_last_trip(self._raw_data_table).at[0, 'trip_counter']
             if target_trip_number == start_trip_number:
-                print("all uploaded")
                 return -1
             else:
                 return start_trip_number
@@ -90,14 +89,17 @@ class HaTool:
                                             (SELECT  {self._overview_table}.trip_number FROM  {self._overview_table})
                                             group by trip_counter''',
                                        con=self._engine)
+            if os.getenv("ignoreList") is not None:
+                founded = values['trip_counter'].tolist()
+                ignore_list = list(map(int, os.getenv("ignoreList").split(" ")))
+                ids = [x for x in founded if x not in ignore_list]
+            else:
+                ids = values['trip_counter'].tolist()
 
-            for index, row in values.iterrows():
-                ids.append(row['trip_counter'])
         except Exception:
             print("Summary not founded")
             values = pd.read_sql_query(f'''SELECT trip_counter FROM rawData order by trip_counter
                                         desc limit 1''', con=self._engine)
-
             for i in range(values['trip_counter'][0], 0, -1):
                 ids.append(i)
         finally:
@@ -105,42 +107,37 @@ class HaTool:
 
     def _trip_handler(self, number_of_processes):
         """manage the Summary Calculator"""
-
         tasks = self._task_list
-        # value = self._get_last_trip_number()
 
-        for i in range(number_of_processes):
-            self._todo_trips.append(tasks.pop())
-        run = True
-        while run:
-            for i in range(number_of_processes):
-                if self._todo_trips[i] == "next":
-                    self._todo_trips[i] = tasks.pop()
+        threads = [None] * number_of_processes
+        for i in range(int(number_of_processes)):
+            next_Trip = tasks.pop()
+            threads[i] = threading.Thread(target=self._calc_summary, args=(next_Trip,))
+            threads[i].start()
 
-            if len(tasks) == 0:
-                run = False
-        print("everything started")
+        while len(threads) != 0:
+            for idx, val in enumerate(threads):
+                if not val.isAlive():
+                    threads.remove(val)
+                    try:
+                        next_Trip = tasks.pop()
+                        new_thread = threading.Thread(target=self._calc_summary, args=(next_Trip,))
+                        new_thread.start()
+                        threads.append(new_thread)
+                    except IndexError as e:
+                        pass
+        print("finish")
         sys_exit()
 
     def _duplicate_check(self, filename):
         """check if file exist in Database"""
-        try:
-            trip_list = pd.read_sql_query(f'SELECT filename FROM {self._log_table};', con=self._engine)
-            # Check if filename is registered in database
-            for index, row in trip_list.iterrows():
-                if row['filename'] == str(filename):
-                    print("found duplicate")
-                    return True
-            return False
-
-        except Exception:
-            print("duplicate error")
-            return False
+        trip_list = pd.read_sql_query(f'SELECT count(filename) as founded FROM {self._log_table} where filename = "{filename}";', con=self._engine)
+        return trip_list['founded'].iloc[0]
 
     def _upload_trips_raw(self):
         """upload all txt files to DB"""
         path = self._path
-
+        print("new FIles")
         try:  # normal
             self._get_last_trip_number()
             counter = pd.read_sql_query(
@@ -163,7 +160,6 @@ class HaTool:
                 values_of_file['trip_counter'] = pd.DataFrame(
                     {'trip_counter': [finished for _ in range(len(values_of_file.index))]})
                 values_of_file.to_sql(self._raw_data_table, con=self._engine, if_exists='append', index='counter')
-
                 if not (os.path.isdir(path + "archive/")):
                     os.makedirs(path + "archive/")
                 move(path + file, path + 'archive/')  # move finished file to archive
@@ -175,7 +171,6 @@ class HaTool:
                 del values_of_file
         sys_exit()
 
-
     @staticmethod
     def _dataframe_difference(df1, df2):
         """Find rows which are different between two DataFrames."""
@@ -184,31 +179,18 @@ class HaTool:
                                   how='outer')
         return comparison_df[comparison_df['_merge'] != 'both']
 
-    def _calc_summary(self, process_id):
+    def _calc_summary(self, trip_id):
         """gen _calc_summary trip by trip"""
-
         try:
-            if self._todo_trips[process_id] == "finished":
-                sys_exit()
-            timeout = 0
-            while self._todo_trips[process_id] == "next":
-                sleep(1)
-                if timeout >= 12:
-                    sys_exit()
-                timeout += 1
-
             query = f"""
             SELECT * FROM {self._raw_data_table}
-            WHERE trip_counter = {self._todo_trips[process_id]} ORDER BY time asc; """
+            WHERE trip_counter = {trip_id} ORDER BY time asc; """
             trip_values_database = pd.read_sql_query(query, self._engine)
 
             number_lines = trip_values_database.shape[0]
             if number_lines == 0:
-                self._todo_trips[process_id] = "finished"
-                exit()
+                return
             elif number_lines <= 20:
-                self._todo_trips[process_id] = "next"
-                self._calc_summary(process_id)
                 return
             df4 = pd.DataFrame(columns=['soc'])
 
@@ -231,7 +213,7 @@ class HaTool:
                 trip_values_database['trip_dist'][last_row])  # proportion of the usage of the electric engine
 
             driving_stop = float(trip_values_database['trip_nbs'][last_row]) - float(
-            trip_values_database['trip_mov_nbs'][last_row])  # time of standing
+                trip_values_database['trip_mov_nbs'][last_row])  # time of standing
 
             # dataset for Database
             summary_value = {'trip_number': trip_values_database['trip_counter'][1],
@@ -286,28 +268,31 @@ class HaTool:
 
             self._lock.acquire()
             overview_frame.to_sql(self._overview_table,
-                                  index= False,
+                                  index=False,
                                   con=self._engine,
                                   if_exists='append')
             self._lock.release()
             del overview_frame
-
-            self._todo_trips[process_id] = "next"
-            self._calc_summary(process_id=process_id)
-
         except ZeroDivisionError:
-            self._todo_trips[process_id] = "next"
-            self._calc_summary(process_id=process_id)
-
-        print("Overview finished")
+            return
+        except:
+            pass
 
     def start(self, program):
         """run the start with all parameter"""
         number_of_processes = self._threads
         if program == "trips":
-            p1 = threading.Thread(target=self._upload_trips_raw)
-            p1.start()
-            p1.join(300)
+            new_files = False
+            regex = re.compile("Trip_20[1-3][0-9]-[0-2][0-9]-[0-3][0-9]_[0-3][0-9]-[0-9][0-9]-[0-9][0-9].txt")
+            for file in os.listdir(self._path):
+                if regex.match(file):
+                    new_files = True
+                    break
+
+            if new_files:
+                p1 = threading.Thread(target=self._upload_trips_raw)
+                p1.start()
+                p1.join(300)
 
         elif program == "calc_summary":
             self._task_list = self._getMissiongSummaryTrips()
@@ -324,13 +309,6 @@ class HaTool:
                 thread_count = int(number_of_processes)
             threading.Thread(target=self._trip_handler, args=(thread_count,)).start()
 
-            timeout = 0
-            while timeout <= 15:
-                if len(self._todo_trips) == thread_count:
-                    break
-                sleep(0.5)
-            for i in range(int(thread_count)):
-                threading.Thread(target=self._calc_summary, args=(i,)).start()
 
         else:
             print("unknown program")
@@ -340,3 +318,4 @@ if __name__ == "__main__":
     ha = HaTool()
     ha.start("trips")
     ha.start("calc_summary")
+
